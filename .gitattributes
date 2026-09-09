@@ -1,0 +1,13 @@
+# MetaEditor writes CRLF line endings; macOS editors write LF. Without
+# this, every save from the other editor shows up as a whole-file diff.
+# Git stores LF internally and checks out CRLF for MQL sources.
+*.mq4   text eol=crlf
+*.mqh   text eol=crlf
+*.mq5   text eol=crlf
+
+# Compiled binaries - never diff or merge these.
+*.ex4   binary
+*.ex5   binary
+
+# Keep shell scripts LF so they run on macOS.
+*.sh    text eol=lf
