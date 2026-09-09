@@ -615,24 +615,63 @@ double GetAtrInPips()
 //+------------------------------------------------------------------+
 double CurrentStopLossPips()
 {
+   double stopPips;
+
    if(!InpUseAtrStops)
-      return(InpStopLossPips);
-
-   double atrPips = GetAtrInPips();
-
-   if(atrPips <= 0.0)
    {
-      Print("WARNING: ATR unavailable. Falling back to the fixed stop of ",
-            DoubleToString(InpStopLossPips, 1), " pips.");
-      return(InpStopLossPips);
+      stopPips = InpStopLossPips;
+   }
+   else
+   {
+      double atrPips = GetAtrInPips();
+
+      if(atrPips <= 0.0)
+      {
+         Print("WARNING: ATR unavailable. Falling back to the fixed stop of ",
+               DoubleToString(InpStopLossPips, 1), " pips.");
+         stopPips = InpStopLossPips;
+      }
+      else
+      {
+         stopPips = atrPips * InpAtrStopMultiplier;
+
+         if(stopPips < InpMinStopPips) stopPips = InpMinStopPips;
+         if(stopPips > InpMaxStopPips) stopPips = InpMaxStopPips;
+      }
    }
 
-   double stopPips = atrPips * InpAtrStopMultiplier;
-
-   if(stopPips < InpMinStopPips) stopPips = InpMinStopPips;
-   if(stopPips > InpMaxStopPips) stopPips = InpMaxStopPips;
+   // Apply the broker's minimum stop distance HERE, before the figure
+   // is used for sizing - not later when the stop is placed.
+   //
+   // AttachStopsToOrder() has to widen any stop that sits inside
+   // MODE_STOPLEVEL, because the broker would reject it otherwise. If
+   // sizing used the narrower pre-clamp figure, the position would be
+   // built for a 5 pip stop and then given a 7 pip one, and the real
+   // money at risk would quietly exceed InpRiskPercentPerTrade by 40%.
+   // Clamping once, up front, keeps sizing and placement agreed on the
+   // same number. This bites on M5 far more than on H1, because ATR
+   // stops there are often close to the broker's floor.
+   double brokerMinimumPips = GetBrokerMinimumStopPips();
+   if(stopPips < brokerMinimumPips)
+      stopPips = brokerMinimumPips;
 
    return(stopPips);
+}
+
+//+------------------------------------------------------------------+
+//| The broker's minimum permitted stop distance, expressed in pips.  |
+//|                                                                   |
+//| MODE_STOPLEVEL is quoted in Points. It is commonly 0 on retail    |
+//| EURUSD accounts, in which case this returns 0 and changes         |
+//| nothing - but it can be 3-5 pips, which on M5 is larger than the  |
+//| stop an ATR calculation would otherwise ask for.                  |
+//+------------------------------------------------------------------+
+double GetBrokerMinimumStopPips()
+{
+   if(g_pipSizeInPrice <= 0.0)
+      return(0.0);
+
+   return((MarketInfo(Symbol(), MODE_STOPLEVEL) * Point) / g_pipSizeInPrice);
 }
 
 //+------------------------------------------------------------------+
@@ -646,9 +685,9 @@ double CurrentTakeProfitPips()
    double atrPips = GetAtrInPips();
 
    if(atrPips <= 0.0)
-      return(InpTakeProfitPips);
+      return(MathMax(InpTakeProfitPips, GetBrokerMinimumStopPips()));
 
-   return(atrPips * InpAtrTargetMultiplier);
+   return(MathMax(atrPips * InpAtrTargetMultiplier, GetBrokerMinimumStopPips()));
 }
 
 //+------------------------------------------------------------------+
