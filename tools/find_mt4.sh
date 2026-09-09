@@ -4,30 +4,55 @@
 #
 # The MetaQuotes macOS build is a Wine wrapper, so the terminal's
 # data folder (the one holding MQL4/Experts) is buried inside a Wine
-# prefix rather than sitting next to the .app. This script finds it
-# and prints everything the other scripts need.
+# prefix rather than sitting next to the .app.
+#
+# Searches the known Wine-prefix locations first, because a blind
+# scan of ~/Library takes minutes - it has to walk every browser
+# cache and Xcode derived-data folder on the machine.
 #
 # Safe to run: it only reads.
 # ---------------------------------------------------------------
 set -u
+shopt -s nullglob nocaseglob    # unmatched globs vanish; match case-insensitively
 
 echo "== Application bundle =="
 ls -d /Applications/MetaTrader*.app 2>/dev/null || echo "  none found in /Applications"
 
 echo
 echo "== Wine prefixes =="
-find "$HOME/Library/Application Support" -maxdepth 1 -iname "*metatrader*" 2>/dev/null
-find "$HOME/Library/Containers"          -maxdepth 1 -iname "*metatrader*" 2>/dev/null
+PREFIXES=""
+for prefix in "$HOME/Library/Application Support"/*metatrader* \
+              "$HOME/Library/Application Support"/*metaquotes* \
+              "$HOME/Library/Containers"/*metatrader* \
+              "$HOME/Library/Containers"/*metaquotes*; do
+  [ -d "$prefix" ] || continue
+  echo "  $prefix"
+  PREFIXES="$PREFIXES
+$prefix"
+done
+[ -n "$PREFIXES" ] || echo "  none found"
 
 echo
-echo "== MQL4/Experts directories (this is what you want) =="
-find "$HOME/Library" -maxdepth 14 -type d -path "*/MQL4/Experts" 2>/dev/null
+echo "== MQL4 data folders (this is what you want) =="
+printf '%s\n' "$PREFIXES" | while IFS= read -r prefix; do
+  [ -n "$prefix" ] || continue
+  find "$prefix" -maxdepth 10 -type d -path '*/MQL4/Experts' 2>/dev/null | \
+    while IFS= read -r experts; do dirname "$experts"; done
+done
 
 echo
 echo "== metaeditor.exe (the compiler) =="
-find "$HOME/Library" -maxdepth 14 -type f -iname "metaeditor*.exe" 2>/dev/null
-find /Applications/MetaTrader*.app -maxdepth 8 -type f -iname "metaeditor*.exe" 2>/dev/null
+printf '%s\n' "$PREFIXES" | while IFS= read -r prefix; do
+  [ -n "$prefix" ] || continue
+  find "$prefix" -maxdepth 10 -type f -iname 'metaeditor*.exe' 2>/dev/null
+done
 
 echo
 echo "== bundled wine binary =="
-find /Applications/MetaTrader*.app -maxdepth 8 -type f -name "wine" 2>/dev/null
+for bundle in /Applications/MetaTrader*.app; do
+  [ -d "$bundle" ] || continue
+  find "$bundle" -maxdepth 8 -type f -name wine 2>/dev/null
+done
+
+echo
+echo "Done."

@@ -17,7 +17,7 @@
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_FILE="$REPO_DIR/Experts/MaCrossoverBot.mq4"
+SOURCE_FILE="$REPO_DIR/Experts/MACrossover.mq4"
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "ERROR: cannot find $SOURCE_FILE" >&2
@@ -31,7 +31,19 @@ if [ -z "$MQL4_DIR" ]; then
   # The MetaQuotes macOS build is Wine-wrapped, so the terminal's data
   # folder sits deep inside a Wine prefix under ~/Library. Search for
   # the Experts folder and work back up one level.
-  FOUND="$(find "$HOME/Library" -maxdepth 14 -type d -path '*/MQL4/Experts' 2>/dev/null || true)"
+  # Search the known Wine-prefix locations rather than scanning the
+  # whole of ~/Library, which takes minutes on a machine with caches.
+  shopt -s nullglob nocaseglob
+  FOUND=""
+  for prefix in "$HOME/Library/Application Support"/*metatrader* \
+                "$HOME/Library/Application Support"/*metaquotes* \
+                "$HOME/Library/Containers"/*metatrader*; do
+    [ -d "$prefix" ] || continue
+    HITS="$(find "$prefix" -maxdepth 10 -type d -path '*/MQL4/Experts' 2>/dev/null || true)"
+    [ -n "$HITS" ] && FOUND="$FOUND
+$HITS"
+  done
+  FOUND="$(printf '%s\n' "$FOUND" | grep . || true)"
   COUNT="$(printf '%s\n' "$FOUND" | grep -c . || true)"
 
   if [ "$COUNT" -eq 0 ]; then
@@ -54,7 +66,7 @@ if [ -z "$MQL4_DIR" ]; then
 fi
 
 TARGET_DIR="$MQL4_DIR/Experts"
-TARGET_LINK="$TARGET_DIR/MaCrossoverBot.mq4"
+TARGET_LINK="$TARGET_DIR/MACrossover.mq4"
 
 if [ ! -d "$TARGET_DIR" ]; then
   echo "ERROR: $TARGET_DIR does not exist." >&2
@@ -78,7 +90,7 @@ if [ -L "$TARGET_LINK" ] && [ -f "$TARGET_LINK" ]; then
   echo "Linked:   $TARGET_LINK"
   echo "       -> $(readlink "$TARGET_LINK")"
   echo
-  echo "Next: open MetaEditor, open MaCrossoverBot.mq4, press F7 to compile."
+  echo "Next: open MetaEditor, open MACrossover.mq4, press F7 to compile."
 else
   echo "ERROR: the symlink was not created correctly." >&2
   exit 1

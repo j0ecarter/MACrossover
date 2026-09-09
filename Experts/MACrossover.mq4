@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                             MaCrossoverBot.mq4    |
+//|                                                MACrossover.mq4    |
 //|                                                                   |
 //|  A deliberately simple, heavily commented MT4 Expert Advisor,     |
 //|  written as a learning skeleton rather than as a money-maker.     |
@@ -95,7 +95,7 @@ input double  InpMaxSpreadPips         = 1.5;    // Skip entries when the spread
 input double  InpMaxSlippagePips       = 1.0;    // Maximum price deviation we will accept
 input int     InpOrderRetryAttempts    = 3;      // How many times to retry a rejected order
 input int     InpOrderRetryDelayMs     = 500;    // Pause between retries, in milliseconds
-input string  InpTradeComment          = "MaCrossoverBot";
+input string  InpTradeComment          = "MACrossover";
 
 //====================================================================
 // SECTION 2 - GLOBAL STATE

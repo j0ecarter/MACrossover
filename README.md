@@ -1,4 +1,4 @@
-# MaCrossoverBot
+# MACrossover
 
 A MetaTrader 4 Expert Advisor written in MQL4, tuned for **EURUSD M5**.
 A moving-average crossover is the entry signal, but the point of this
@@ -33,7 +33,7 @@ cannot survive a Sunday-open gap.
 ## Layout
 
 ```
-Experts/MaCrossoverBot.mq4    The Expert Advisor
+Experts/MACrossover.mq4    The Expert Advisor
 Include/                      Shared helper headers (add as the project grows)
 Scripts/                      One-shot utility scripts
 docs/                         Strategy notes, backtest reports, screenshots
@@ -55,7 +55,7 @@ This finds the MQL4 data folder inside MT4's Wine prefix and symlinks
 the EA into `MQL4/Experts/`. A symlink rather than a copy, so the file
 MetaEditor compiles and the file git tracks are the same file.
 
-Then in MetaEditor open `MaCrossoverBot.mq4` and press **F7**. In MT4,
+Then in MetaEditor open `MACrossover.mq4` and press **F7**. In MT4,
 refresh the Navigator panel, drag the EA onto a EURUSD M5 chart, tick
 **Allow live trading**, and enable **AutoTrading**.
 
