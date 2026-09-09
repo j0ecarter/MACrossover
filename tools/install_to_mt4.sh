@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------
-# install_to_mt4.sh - symlink this repo's Expert Advisor into the
+# install_to_mt4.sh - symlink this repo's MQL4 sources into the
 # MetaTrader 4 data folder.
 #
-# A symlink rather than a copy, so the file MetaEditor compiles and
-# the file git tracks are the same file. Edit in VS Code, compile in
-# MetaEditor, commit in Terminal - no copying, no version drift.
+#   Experts/MACrossover.mq4    -> MQL4/Experts/
+#   Indicators/CandleTimer.mq4 -> MQL4/Indicators/
+#
+# Symlinks rather than copies, so the files MetaEditor compiles and
+# the files git tracks are the same files. Edit in VS Code, compile
+# in MetaEditor, commit in Terminal - one source of truth.
 #
 # Usage:
 #   ./tools/install_to_mt4.sh                 # auto-detect the data folder
@@ -17,22 +20,14 @@
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_FILE="$REPO_DIR/Experts/MACrossover.mq4"
-
-if [ ! -f "$SOURCE_FILE" ]; then
-  echo "ERROR: cannot find $SOURCE_FILE" >&2
-  exit 1
-fi
 
 # --- Work out which MQL4 folder to install into -----------------
 MQL4_DIR="${1:-}"
 
 if [ -z "$MQL4_DIR" ]; then
-  # The MetaQuotes macOS build is Wine-wrapped, so the terminal's data
-  # folder sits deep inside a Wine prefix under ~/Library. Search for
-  # the Experts folder and work back up one level.
   # Search the known Wine-prefix locations rather than scanning the
-  # whole of ~/Library, which takes minutes on a machine with caches.
+  # whole of ~/Library, which walks every browser cache on the machine
+  # and takes minutes.
   shopt -s nullglob nocaseglob
   FOUND=""
   for prefix in "$HOME/Library/Application Support"/*metatrader* \
@@ -47,10 +42,9 @@ $HITS"
   COUNT="$(printf '%s\n' "$FOUND" | grep -c . || true)"
 
   if [ "$COUNT" -eq 0 ]; then
-    echo "ERROR: no MQL4 data folder found under ~/Library." >&2
+    echo "ERROR: no MQL4 data folder found." >&2
     echo "Open MetaTrader 4 at least once so it creates its data folder," >&2
-    echo "then re-run this script. Or run ./tools/find_mt4.sh to see what" >&2
-    echo "is actually on disk and pass the path in as an argument." >&2
+    echo "then re-run. Or run ./tools/find_mt4.sh and pass the path in." >&2
     exit 1
   fi
 
@@ -65,33 +59,56 @@ $HITS"
   MQL4_DIR="$(dirname "$FOUND")"
 fi
 
-TARGET_DIR="$MQL4_DIR/Experts"
-TARGET_LINK="$TARGET_DIR/MACrossover.mq4"
-
-if [ ! -d "$TARGET_DIR" ]; then
-  echo "ERROR: $TARGET_DIR does not exist." >&2
-  exit 1
-fi
-
 echo "Repo:     $REPO_DIR"
 echo "MT4 data: $MQL4_DIR"
+echo
 
-# --- Preserve anything already sitting at the target -------------
-if [ -e "$TARGET_LINK" ] && [ ! -L "$TARGET_LINK" ]; then
-  BACKUP="$TARGET_LINK.backup.$(date +%Y%m%d%H%M%S)"
-  mv "$TARGET_LINK" "$BACKUP"
-  echo "Existing file backed up to: $BACKUP"
-fi
+# ---------------------------------------------------------------
+# link_source <repo-subfolder> <mql4-subfolder> <filename>
+#
+# Backs up any real file already at the target, then links ours in.
+# A target that is already a symlink is simply replaced - it will be
+# one of ours from a previous run.
+# ---------------------------------------------------------------
+link_source()
+{
+  repo_subfolder="$1"
+  mql4_subfolder="$2"
+  filename="$3"
 
-ln -sfn "$SOURCE_FILE" "$TARGET_LINK"
+  source_file="$REPO_DIR/$repo_subfolder/$filename"
+  target_dir="$MQL4_DIR/$mql4_subfolder"
+  target_link="$target_dir/$filename"
 
-# --- Verify -----------------------------------------------------
-if [ -L "$TARGET_LINK" ] && [ -f "$TARGET_LINK" ]; then
-  echo "Linked:   $TARGET_LINK"
-  echo "       -> $(readlink "$TARGET_LINK")"
-  echo
-  echo "Next: open MetaEditor, open MACrossover.mq4, press F7 to compile."
-else
-  echo "ERROR: the symlink was not created correctly." >&2
-  exit 1
-fi
+  if [ ! -f "$source_file" ]; then
+    echo "  SKIP $filename - not present in the repo at $repo_subfolder/"
+    return 0
+  fi
+
+  if [ ! -d "$target_dir" ]; then
+    echo "  SKIP $filename - $target_dir does not exist"
+    return 0
+  fi
+
+  if [ -e "$target_link" ] && [ ! -L "$target_link" ]; then
+    backup="$target_link.backup.$(date +%Y%m%d%H%M%S)"
+    mv "$target_link" "$backup"
+    echo "  Backed up the existing file to $(basename "$backup")"
+  fi
+
+  ln -sfn "$source_file" "$target_link"
+
+  if [ -L "$target_link" ] && [ -f "$target_link" ]; then
+    echo "  OK   $mql4_subfolder/$filename -> $repo_subfolder/$filename"
+  else
+    echo "  FAIL $filename - the symlink was not created correctly" >&2
+    return 1
+  fi
+}
+
+link_source "Experts"    "Experts"    "MACrossover.mq4"
+link_source "Indicators" "Indicators" "CandleTimer.mq4"
+
+echo
+echo "Next: in MetaEditor open each file and press F7 to compile."
+echo "Then refresh MT4's Navigator panel (right-click - Refresh)."

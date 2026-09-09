@@ -33,7 +33,8 @@ cannot survive a Sunday-open gap.
 ## Layout
 
 ```
-Experts/MACrossover.mq4    The Expert Advisor
+Experts/MACrossover.mq4       The Expert Advisor
+Indicators/CandleTimer.mq4    "Candle closes in MM:SS" chart label
 Include/                      Shared helper headers (add as the project grows)
 Scripts/                      One-shot utility scripts
 docs/                         Strategy notes, backtest reports, screenshots
