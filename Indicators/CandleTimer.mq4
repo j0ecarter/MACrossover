@@ -33,12 +33,14 @@
 input string  InpSectionPosition   = "--- Position ---";
 input ENUM_BASE_CORNER InpCorner   = CORNER_LEFT_UPPER;  // Which corner to anchor to
 input int     InpXDistance         = 12;    // Pixels from that corner, horizontally
-input int     InpYDistance         = 22;    // Pixels from that corner, vertically
+input int     InpYDistance         = 95;    // Pixels from that corner, vertically
+                                            // (95 clears the one-click trading panel)
 
 input string  InpSectionAppearance = "--- Appearance ---";
 input string  InpFontName          = "Consolas";  // A monospaced font stops the label jittering
 input int     InpFontSize          = 11;
-input color   InpNormalColour      = clrSilver;
+input bool    InpAutoContrastColour = true; // Pick black or white to suit the chart background
+input color   InpNormalColour      = clrSilver;   // Used only when auto-contrast is off
 input color   InpWarningColour     = clrGold;     // Used inside the warning window
 input color   InpImminentColour    = clrTomato;   // Used in the final few seconds
 input int     InpWarningSeconds    = 60;    // Switch to the warning colour below this
@@ -89,6 +91,11 @@ int OnInit()
 
    EventSetTimer(1);
    UpdateLabel();
+
+   Print("CandleTimer attached to ", Symbol(), " ", TimeframeToText(Period()),
+         ". Label at corner ", EnumToString(InpCorner),
+         ", offset ", InpXDistance, "x", InpYDistance,
+         ", colour ", (InpAutoContrastColour ? "auto-contrast" : "fixed"), ".");
 
    return(INIT_SUCCEEDED);
 }
@@ -228,10 +235,37 @@ int SecondsUntilBarCloses()
 //+------------------------------------------------------------------+
 color ColourForRemaining(int secondsRemaining)
 {
-   if(secondsRemaining < 0)                     return(InpNormalColour);
+   color normalColour = InpAutoContrastColour ? ContrastingTextColour() : InpNormalColour;
+
+   if(secondsRemaining < 0)                     return(normalColour);
    if(secondsRemaining <= InpImminentSeconds)   return(InpImminentColour);
    if(secondsRemaining <= InpWarningSeconds)    return(InpWarningColour);
-   return(InpNormalColour);
+   return(normalColour);
+}
+
+//+------------------------------------------------------------------+
+//| Black or white, whichever is readable against the chart's own     |
+//| background colour.                                                |
+//|                                                                   |
+//| A fixed light-grey label is invisible on MT4's pale default       |
+//| scheme and a fixed black one is invisible on a dark scheme, so    |
+//| neither is a safe default. MQL colours are packed 0x00BBGGRR;     |
+//| the weights below are the standard perceived-luminance ones,      |
+//| green counting for most because the eye is most sensitive to it.  |
+//+------------------------------------------------------------------+
+color ContrastingTextColour()
+{
+   int backgroundColour = (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+
+   int redChannel   =  backgroundColour        & 0xFF;
+   int greenChannel = (backgroundColour >> 8)  & 0xFF;
+   int blueChannel  = (backgroundColour >> 16) & 0xFF;
+
+   double perceivedLuminance = 0.299 * redChannel
+                             + 0.587 * greenChannel
+                             + 0.114 * blueChannel;
+
+   return(perceivedLuminance > 140.0 ? clrBlack : clrWhite);
 }
 
 //+------------------------------------------------------------------+
