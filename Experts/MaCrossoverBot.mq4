@@ -12,15 +12,35 @@
 //|    - Every decision is made once per COMPLETED bar, never on      |
 //|      every incoming tick. See IsNewBar() for why this matters.    |
 //|                                                                   |
+//|  TUNED FOR M5                                                     |
+//|    Defaults below are set for a 5-minute EURUSD chart. Two        |
+//|    features exist specifically because M5 is a harsher            |
+//|    environment than H1:                                           |
+//|                                                                   |
+//|    1. ATR-BASED STOPS. A fixed 10-pip stop is generous at 04:00   |
+//|       and suffocating at 13:30, because EURUSD M5 volatility      |
+//|       swings by a factor of three or more across the day. Sizing  |
+//|       the stop from ATR makes it track the market it is in.       |
+//|       Position size then varies per trade to keep the MONEY at    |
+//|       risk constant - which is the point of risk-based sizing.    |
+//|                                                                   |
+//|    2. A TRADING-HOURS FILTER. On H1 the Asian session is merely   |
+//|       quiet. On M5 it is a whipsaw generator: ranges collapse to  |
+//|       a pip or two while spread stays constant, so cost as a      |
+//|       fraction of available movement goes vertical. The daily     |
+//|       rollover is worse still. The filter works in GMT, with the  |
+//|       broker's server offset detected automatically.              |
+//|                                                                   |
 //|  HONEST WARNING                                                   |
-//|    A moving-average crossover has no persistent edge in liquid    |
-//|    FX markets. Everything valuable in this file is the plumbing   |
-//|    around the signal: position sizing, broker constraints, order  |
-//|    error handling, and state management. Swap the signal out      |
-//|    later; keep the plumbing.                                      |
+//|    A moving-average crossover has no persistent edge, and on M5   |
+//|    spread alone will consume a large share of the daily range.    |
+//|    Everything valuable in this file is the plumbing around the    |
+//|    signal: position sizing, broker constraints, order error       |
+//|    handling and state management. Swap the signal out later;      |
+//|    keep the plumbing.                                             |
 //+------------------------------------------------------------------+
 #property copyright "Joe"
-#property version   "1.00"
+#property version   "1.10"
 #property strict                 // Enforces modern MQL4 rules. Always keep this on.
 
 //====================================================================
@@ -31,32 +51,51 @@
 // want to tune without recompiling belongs here.
 //====================================================================
 
-input string  InpSectionStrategy      = "--- Strategy ---";
-input int     InpFastMaPeriod         = 20;      // Fast MA period (bars)
-input int     InpSlowMaPeriod         = 50;      // Slow MA period (bars)
-input ENUM_MA_METHOD    InpMaMethod   = MODE_SMA;        // MA calculation method
-input ENUM_APPLIED_PRICE InpMaPrice   = PRICE_CLOSE;     // Price the MA is built from
+input string  InpSectionStrategy       = "--- Strategy ---";
+input int     InpFastMaPeriod          = 20;     // Fast MA period (bars)
+input int     InpSlowMaPeriod          = 50;     // Slow MA period (bars)
+input ENUM_MA_METHOD     InpMaMethod   = MODE_SMA;      // MA calculation method
+input ENUM_APPLIED_PRICE InpMaPrice    = PRICE_CLOSE;   // Price the MA is built from
 
-input string  InpSectionRisk          = "--- Risk & sizing ---";
-input bool    InpUseRiskBasedSizing   = true;    // true = size from % risk, false = fixed lots
-input double  InpRiskPercentPerTrade  = 1.0;     // % of account balance risked per trade
-input double  InpFixedLotSize         = 0.01;    // Lots used when risk-based sizing is off
-input double  InpStopLossPips         = 30.0;    // Stop loss distance in pips (0 = none)
-input double  InpTakeProfitPips       = 60.0;    // Take profit distance in pips (0 = none)
+input string  InpSectionRisk           = "--- Risk & sizing ---";
+input bool    InpUseRiskBasedSizing    = true;   // true = size from % risk, false = fixed lots
+input double  InpRiskPercentPerTrade   = 0.5;    // % of balance risked per trade (halved for M5)
+input double  InpFixedLotSize          = 0.01;   // Lots used when risk-based sizing is off
 
-input string  InpSectionManagement    = "--- Trade management ---";
-input bool    InpCloseOnOppositeSignal= true;    // Close the position when the MAs cross back
-input bool    InpUseTrailingStop      = false;   // Enable a simple trailing stop
-input double  InpTrailingStopPips     = 20.0;    // Trailing distance in pips
-input double  InpTrailingStepPips     = 5.0;     // Minimum improvement before moving the stop
+input string  InpSectionStops          = "--- Stop sizing ---";
+input bool    InpUseAtrStops           = true;   // true = size stops from ATR, false = fixed pips
+input int     InpAtrPeriod             = 14;     // ATR lookback in bars
+input double  InpAtrStopMultiplier     = 1.5;    // Stop distance = ATR x this
+input double  InpAtrTargetMultiplier   = 3.0;    // Target distance = ATR x this
+input double  InpAtrTrailingMultiplier = 1.0;    // Trailing distance = ATR x this
+input double  InpMinStopPips           = 5.0;    // Floor on the ATR-derived stop
+input double  InpMaxStopPips           = 25.0;   // Ceiling on the ATR-derived stop
+input double  InpStopLossPips          = 10.0;   // Fixed stop, used when ATR stops are off
+input double  InpTakeProfitPips        = 20.0;   // Fixed target, used when ATR stops are off
 
-input string  InpSectionExecution     = "--- Execution ---";
-input int     InpMagicNumber          = 20260909;// Unique ID so this EA only touches its own trades
-input double  InpMaxSpreadPips        = 3.0;     // Skip entries when the spread is wider than this
-input double  InpMaxSlippagePips      = 2.0;     // Maximum price deviation we will accept
-input int     InpOrderRetryAttempts   = 3;       // How many times to retry a rejected order
-input int     InpOrderRetryDelayMs    = 500;     // Pause between retries, in milliseconds
-input string  InpTradeComment         = "MaCrossoverBot";
+input string  InpSectionSession        = "--- Trading hours (GMT) ---";
+input bool    InpUseSessionFilter      = true;   // Only take entries inside the window below
+input int     InpSessionStartHourGmt   = 7;      // 07:00 GMT - around the London open
+input int     InpSessionEndHourGmt     = 20;     // 20:00 GMT - mid NY afternoon
+input bool    InpCloseAtSessionEnd     = true;   // Flatten when the window closes
+input bool    InpCloseBeforeWeekend    = true;   // Do not carry a position over the weekend
+input int     InpFridayCloseHourGmt    = 19;     // Friday flatten time
+input bool    InpAutoDetectGmtOffset   = true;   // Work out the broker's server offset itself
+input int     InpBrokerGmtOffsetHours  = 2;      // Manual offset, used in the tester or as fallback
+
+input string  InpSectionManagement     = "--- Trade management ---";
+input bool    InpCloseOnOppositeSignal = true;   // Close the position when the MAs cross back
+input bool    InpUseTrailingStop       = true;   // Enable a trailing stop
+input double  InpTrailingStopPips      = 8.0;    // Trailing distance, when ATR stops are off
+input double  InpTrailingStepPips      = 2.0;    // Minimum improvement before moving the stop
+
+input string  InpSectionExecution      = "--- Execution ---";
+input int     InpMagicNumber           = 20260909;// Unique ID so this EA only touches its own trades
+input double  InpMaxSpreadPips         = 1.5;    // Skip entries when the spread is wider than this
+input double  InpMaxSlippagePips       = 1.0;    // Maximum price deviation we will accept
+input int     InpOrderRetryAttempts    = 3;      // How many times to retry a rejected order
+input int     InpOrderRetryDelayMs     = 500;    // Pause between retries, in milliseconds
+input string  InpTradeComment          = "MaCrossoverBot";
 
 //====================================================================
 // SECTION 2 - GLOBAL STATE
@@ -83,6 +122,11 @@ int      g_lotDigits          = 2;
 // Open time of the last bar we have already made a decision on.
 // Used by IsNewBar() to run the strategy exactly once per bar.
 datetime g_lastProcessedBar   = 0;
+
+// Hours to subtract from the broker's server clock to get GMT.
+// Brokers rarely run on GMT - most sit on GMT+2 or GMT+3 - so every
+// session comparison has to go through this.
+int      g_brokerGmtOffset    = 0;
 
 //====================================================================
 // SECTION 3 - LIFECYCLE EVENT HANDLERS
@@ -113,18 +157,54 @@ int OnInit()
    }
 
    // --- Validate the risk parameters ------------------------------
-   if(InpUseRiskBasedSizing)
+   if(InpUseRiskBasedSizing &&
+      (InpRiskPercentPerTrade <= 0.0 || InpRiskPercentPerTrade > 10.0))
    {
-      if(InpRiskPercentPerTrade <= 0.0 || InpRiskPercentPerTrade > 10.0)
+      Print("ERROR: Risk percent must be between 0 and 10. ",
+            "Anything above ~2% per trade is reckless.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+
+   // --- Validate the stop parameters ------------------------------
+   if(InpUseAtrStops)
+   {
+      if(InpAtrPeriod < 1)
       {
-         Print("ERROR: Risk percent must be between 0 and 10. ",
-               "Anything above ~2% per trade is reckless.");
+         Print("ERROR: ATR period must be at least 1.");
          return(INIT_PARAMETERS_INCORRECT);
       }
-      if(InpStopLossPips <= 0.0)
+      if(InpAtrStopMultiplier <= 0.0 || InpAtrTargetMultiplier <= 0.0)
       {
-         Print("ERROR: Risk-based sizing needs a non-zero stop loss ",
-               "to size against.");
+         Print("ERROR: ATR multipliers must be greater than zero.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+      if(InpMinStopPips <= 0.0 || InpMaxStopPips <= InpMinStopPips)
+      {
+         Print("ERROR: Need 0 < InpMinStopPips < InpMaxStopPips.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+   }
+   else if(InpUseRiskBasedSizing && InpStopLossPips <= 0.0)
+   {
+      // Risk-based sizing divides by the stop distance, so it cannot
+      // work without one.
+      Print("ERROR: Risk-based sizing needs a non-zero stop loss to size against.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+
+   // --- Validate the session window -------------------------------
+   if(InpUseSessionFilter)
+   {
+      if(InpSessionStartHourGmt < 0 || InpSessionStartHourGmt > 23 ||
+         InpSessionEndHourGmt   < 0 || InpSessionEndHourGmt   > 23)
+      {
+         Print("ERROR: Session hours must be in the range 0-23.");
+         return(INIT_PARAMETERS_INCORRECT);
+      }
+      if(InpSessionStartHourGmt == InpSessionEndHourGmt)
+      {
+         Print("ERROR: Session start and end hours are identical, ",
+               "which leaves no window to trade in.");
          return(INIT_PARAMETERS_INCORRECT);
       }
    }
@@ -138,11 +218,45 @@ int OnInit()
    g_lotDigits = (int)MathRound(-MathLog10(lotStep));  // 0.01 -> 2, 0.1 -> 1
    if(g_lotDigits < 0) g_lotDigits = 0;
 
+   // --- Work out the broker's clock offset from GMT ---------------
+   g_brokerGmtOffset = DetermineBrokerGmtOffset();
+
    Print(InpTradeComment, " initialised on ", Symbol(),
+         " ", TimeframeToText(Period()),
          ". Digits=", Digits,
          ", pip=", DoubleToString(g_pipSizeInPrice, Digits),
          ", points per pip=", g_pointsPerPip,
          ", lot step=", DoubleToString(lotStep, g_lotDigits));
+
+   Print("Broker server clock is GMT", (g_brokerGmtOffset >= 0 ? "+" : ""),
+         g_brokerGmtOffset, ". Server time now ", TimeToString(TimeCurrent()),
+         ", so GMT is ", TimeToString(CurrentGmtTime()), ".");
+
+   if(InpUseSessionFilter)
+      Print("Session filter active: entries allowed ", InpSessionStartHourGmt,
+            ":00 to ", InpSessionEndHourGmt, ":00 GMT, weekdays only.",
+            " Currently ", (IsWithinTradingSession() ? "INSIDE" : "outside"),
+            " the window.");
+
+   if(InpUseAtrStops)
+   {
+      string atrNote = "ATR stops active: stop = ATR(" + IntegerToString(InpAtrPeriod)
+                     + ") x " + DoubleToString(InpAtrStopMultiplier, 2)
+                     + ", clamped to " + DoubleToString(InpMinStopPips, 1)
+                     + "-" + DoubleToString(InpMaxStopPips, 1) + " pips.";
+
+      // The ATR needs history. Right after attaching it may not be
+      // readable yet, which is normal and not worth a warning.
+      double atrNow = GetAtrInPips();
+      if(atrNow > 0.0)
+         atrNote = atrNote + " ATR is currently " + DoubleToString(atrNow, 1)
+                 + " pips, giving a " + DoubleToString(CurrentStopLossPips(), 1)
+                 + " pip stop.";
+      else
+         atrNote = atrNote + " ATR not yet readable - waiting for history.";
+
+      Print(atrNote);
+   }
 
    return(INIT_SUCCEEDED);
 }
@@ -153,7 +267,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   PrintFormat("%s stopped. Reason code: %d", InpTradeComment, reason);
+   Print(InpTradeComment, " stopped. Reason code: ", reason);
 }
 
 //+------------------------------------------------------------------+
@@ -166,6 +280,23 @@ void OnTick()
    // position on every tick - before the once-per-bar gate below.
    if(InpUseTrailingStop)
       ApplyTrailingStop();
+
+   // Time-based exits also have to be honoured mid-bar. Waiting for
+   // the next bar close to flatten before the weekend would mean
+   // sitting through the gap, which is the thing we are avoiding.
+   if(HasOpenPosition())
+   {
+      if(ShouldFlattenForWeekend())
+      {
+         ClosePosition("Friday close - not carrying over the weekend");
+         return;
+      }
+      if(InpCloseAtSessionEnd && InpUseSessionFilter && !IsWithinTradingSession())
+      {
+         ClosePosition("trading session has ended");
+         return;
+      }
+   }
 
    // Everything else only runs once per completed bar. Running entry
    // logic on every tick would fire the same signal hundreds of times
@@ -182,8 +313,8 @@ void OnTick()
       return;
    }
 
-   // The MAs need enough history to be meaningful.
-   if(Bars < InpSlowMaPeriod + 3)
+   // The MAs and the ATR need enough history to be meaningful.
+   if(Bars < MathMax(InpSlowMaPeriod, InpAtrPeriod) + 3)
       return;
 
    int signal = GetCrossoverSignal();   // +1 = long, -1 = short, 0 = nothing
@@ -192,15 +323,20 @@ void OnTick()
    if(HasOpenPosition())
    {
       if(InpCloseOnOppositeSignal && signal != 0 && signal != GetOpenPositionDirection())
-      {
-         ClosePosition();
-      }
+         ClosePosition("opposite crossover signal");
+
       return;   // Never stack positions in this EA.
    }
 
    // --- Consider a new entry --------------------------------------
    if(signal == 0)
       return;
+
+   if(!IsWithinTradingSession())
+      return;   // Silent: this fires on most bars of the day and would flood the log.
+
+   if(ShouldFlattenForWeekend())
+      return;   // No new positions into the Friday close either.
 
    if(!IsSpreadAcceptable())
       return;
@@ -254,6 +390,10 @@ bool IsNewBar()
 //+------------------------------------------------------------------+
 //| Reject entries when the spread is unusually wide - typically at   |
 //| the daily rollover or around news. MODE_SPREAD is in Points.      |
+//|                                                                   |
+//| This matters far more on M5 than on H1. A 1.5 pip spread against  |
+//| a 20 pip target is 7.5% of the trade given away at entry; the     |
+//| same spread against an H1 60 pip target is 2.5%.                  |
 //+------------------------------------------------------------------+
 bool IsSpreadAcceptable()
 {
@@ -261,15 +401,141 @@ bool IsSpreadAcceptable()
 
    if(currentSpreadPips > InpMaxSpreadPips)
    {
-      PrintFormat("Skipping entry: spread %.1f pips exceeds the %.1f pip limit.",
-                  currentSpreadPips, InpMaxSpreadPips);
+      Print("Skipping entry: spread ", DoubleToString(currentSpreadPips, 1),
+            " pips exceeds the ", DoubleToString(InpMaxSpreadPips, 1), " pip limit.");
       return(false);
    }
    return(true);
 }
 
+//+------------------------------------------------------------------+
+//| Readable timeframe name, for the startup log line only.           |
+//+------------------------------------------------------------------+
+string TimeframeToText(int timeframeMinutes)
+{
+   switch(timeframeMinutes)
+   {
+      case PERIOD_M1:  return("M1");
+      case PERIOD_M5:  return("M5");
+      case PERIOD_M15: return("M15");
+      case PERIOD_M30: return("M30");
+      case PERIOD_H1:  return("H1");
+      case PERIOD_H4:  return("H4");
+      case PERIOD_D1:  return("D1");
+      case PERIOD_W1:  return("W1");
+      case PERIOD_MN1: return("MN1");
+      default:         return("M" + IntegerToString(timeframeMinutes));
+   }
+}
+
 //====================================================================
-// SECTION 5 - THE SIGNAL
+// SECTION 5 - BROKER CLOCK AND TRADING HOURS
+//--------------------------------------------------------------------
+// Nothing about server time is safe to assume. Brokers pick their own
+// timezone - GMT+2 and GMT+3 are the common ones - and many shift by
+// an hour with US daylight saving, which is why the offset is
+// re-derived on every EA load rather than hardcoded.
+//====================================================================
+
+//+------------------------------------------------------------------+
+//| Hours to subtract from server time to get GMT.                    |
+//|                                                                   |
+//| TimeGMT() reads the PC's clock and timezone, so it is only        |
+//| trustworthy live. In the Strategy Tester it is modelled and the   |
+//| comparison is meaningless, so the manual input is used there.     |
+//+------------------------------------------------------------------+
+int DetermineBrokerGmtOffset()
+{
+   if(!InpAutoDetectGmtOffset || IsTesting() || IsOptimization())
+      return(InpBrokerGmtOffsetHours);
+
+   datetime serverTime = TimeCurrent();
+   datetime gmtTime    = TimeGMT();
+
+   if(serverTime <= 0 || gmtTime <= 0)
+   {
+      Print("WARNING: Could not read the clocks to detect the broker offset. ",
+            "Falling back to the manual value of ", InpBrokerGmtOffsetHours, ".");
+      return(InpBrokerGmtOffsetHours);
+   }
+
+   int detectedOffset = (int)MathRound((double)(serverTime - gmtTime) / 3600.0);
+
+   // Sanity-check: no real broker sits outside GMT-12..GMT+14.
+   if(detectedOffset < -12 || detectedOffset > 14)
+   {
+      Print("WARNING: Detected an implausible broker offset of ", detectedOffset,
+            " hours. Falling back to the manual value of ", InpBrokerGmtOffsetHours, ".");
+      return(InpBrokerGmtOffsetHours);
+   }
+
+   return(detectedOffset);
+}
+
+//+------------------------------------------------------------------+
+//| Current time expressed in GMT, derived from the server clock.     |
+//+------------------------------------------------------------------+
+datetime CurrentGmtTime()
+{
+   return((datetime)(TimeCurrent() - g_brokerGmtOffset * 3600));
+}
+
+//+------------------------------------------------------------------+
+//| Is the market inside the configured trading window?               |
+//|                                                                   |
+//| Handles a window that wraps past midnight (start 22, end 4), and  |
+//| refuses weekends outright. Returns true when the filter is off.   |
+//+------------------------------------------------------------------+
+bool IsWithinTradingSession()
+{
+   if(!InpUseSessionFilter)
+      return(true);
+
+   MqlDateTime gmtNow;
+   TimeToStruct(CurrentGmtTime(), gmtNow);
+
+   // day_of_week: 0 = Sunday, 6 = Saturday.
+   if(gmtNow.day_of_week == 0 || gmtNow.day_of_week == 6)
+      return(false);
+
+   int hourNow = gmtNow.hour;
+
+   if(InpSessionStartHourGmt < InpSessionEndHourGmt)
+   {
+      // Normal window, e.g. 07:00 -> 20:00.
+      return(hourNow >= InpSessionStartHourGmt && hourNow < InpSessionEndHourGmt);
+   }
+
+   // Window wraps past midnight, e.g. 22:00 -> 04:00.
+   return(hourNow >= InpSessionStartHourGmt || hourNow < InpSessionEndHourGmt);
+}
+
+//+------------------------------------------------------------------+
+//| Should we be flat because the weekend is approaching?             |
+//|                                                                   |
+//| A 10-pip stop cannot survive a Sunday-open gap, which routinely   |
+//| exceeds it. Holding an M5 position over a weekend converts a      |
+//| controlled risk into an uncontrolled one.                         |
+//+------------------------------------------------------------------+
+bool ShouldFlattenForWeekend()
+{
+   if(!InpCloseBeforeWeekend)
+      return(false);
+
+   MqlDateTime gmtNow;
+   TimeToStruct(CurrentGmtTime(), gmtNow);
+
+   if(gmtNow.day_of_week == 5 && gmtNow.hour >= InpFridayCloseHourGmt)  // Friday
+      return(true);
+
+   if(gmtNow.day_of_week == 6)   // Saturday, if the broker is somehow still quoting
+      return(true);
+
+   return(false);
+}
+
+//====================================================================
+// SECTION 6 - THE SIGNAL
 //====================================================================
 
 //+------------------------------------------------------------------+
@@ -310,7 +576,99 @@ int GetCrossoverSignal()
 }
 
 //====================================================================
-// SECTION 6 - POSITION INSPECTION
+// SECTION 7 - STOP AND TARGET DISTANCES
+//--------------------------------------------------------------------
+// All three distances are expressed in PIPS and converted to price
+// only at the point of use, so there is exactly one place where the
+// pip-to-price conversion can go wrong.
+//====================================================================
+
+//+------------------------------------------------------------------+
+//| Average True Range of the last closed bar, in pips.               |
+//|                                                                   |
+//| ATR measures how far price actually travels per bar, including    |
+//| gaps. On EURUSD M5 it typically runs around 3-5 pips through      |
+//| London and New York and under 2 pips overnight, which is exactly  |
+//| the variation a fixed stop cannot cope with.                      |
+//|                                                                   |
+//| Read at shift 1 - the last CLOSED bar - for the same              |
+//| no-repainting reason as the MA signal.                            |
+//+------------------------------------------------------------------+
+double GetAtrInPips()
+{
+   double atrInPrice = iATR(Symbol(), Period(), InpAtrPeriod, 1);
+
+   if(atrInPrice <= 0.0 || g_pipSizeInPrice <= 0.0)
+      return(0.0);
+
+   return(atrInPrice / g_pipSizeInPrice);
+}
+
+//+------------------------------------------------------------------+
+//| The stop distance to use for a trade opened right now, in pips.   |
+//|                                                                   |
+//| In ATR mode the raw figure is clamped between InpMinStopPips and  |
+//| InpMaxStopPips. The floor stops a dead-quiet market producing a   |
+//| stop so tight that spread alone closes the trade; the ceiling     |
+//| stops a news spike producing a stop so wide that risk-based       |
+//| sizing returns a position too small for the broker to accept.     |
+//+------------------------------------------------------------------+
+double CurrentStopLossPips()
+{
+   if(!InpUseAtrStops)
+      return(InpStopLossPips);
+
+   double atrPips = GetAtrInPips();
+
+   if(atrPips <= 0.0)
+   {
+      Print("WARNING: ATR unavailable. Falling back to the fixed stop of ",
+            DoubleToString(InpStopLossPips, 1), " pips.");
+      return(InpStopLossPips);
+   }
+
+   double stopPips = atrPips * InpAtrStopMultiplier;
+
+   if(stopPips < InpMinStopPips) stopPips = InpMinStopPips;
+   if(stopPips > InpMaxStopPips) stopPips = InpMaxStopPips;
+
+   return(stopPips);
+}
+
+//+------------------------------------------------------------------+
+//| The take-profit distance for a trade opened right now, in pips.   |
+//+------------------------------------------------------------------+
+double CurrentTakeProfitPips()
+{
+   if(!InpUseAtrStops)
+      return(InpTakeProfitPips);
+
+   double atrPips = GetAtrInPips();
+
+   if(atrPips <= 0.0)
+      return(InpTakeProfitPips);
+
+   return(atrPips * InpAtrTargetMultiplier);
+}
+
+//+------------------------------------------------------------------+
+//| The trailing-stop distance to use right now, in pips.             |
+//+------------------------------------------------------------------+
+double CurrentTrailingPips()
+{
+   if(!InpUseAtrStops)
+      return(InpTrailingStopPips);
+
+   double atrPips = GetAtrInPips();
+
+   if(atrPips <= 0.0)
+      return(InpTrailingStopPips);
+
+   return(atrPips * InpAtrTrailingMultiplier);
+}
+
+//====================================================================
+// SECTION 8 - POSITION INSPECTION
 //--------------------------------------------------------------------
 // MT4 has no "current position" object. You loop over the terminal's
 // order pool and filter by symbol and magic number yourself. The
@@ -354,7 +712,7 @@ int GetOpenPositionDirection()
 }
 
 //====================================================================
-// SECTION 7 - POSITION SIZING
+// SECTION 9 - POSITION SIZING
 //====================================================================
 
 //+------------------------------------------------------------------+
@@ -371,11 +729,18 @@ int GetOpenPositionDirection()
 //|   4. Round DOWN to the broker's lot step and clamp to min/max.    |
 //|      Always round down: rounding up silently increases your risk. |
 //|                                                                   |
-//| Worked example - EURUSD, standard account:                        |
-//|   balance 10,000 GBP, risk 1%          -> riskAmount = 100        |
-//|   stop 30 pips, pip value ~7.90/lot    -> 30 * 7.90 = 237 per lot |
-//|   100 / 237                            -> 0.42 lots               |
-//|   lot step 0.01                        -> 0.42 lots               |
+//| Worked example - EURUSD, 10,000 GBP balance, 0.5% risk:           |
+//|   riskAmount = 50 GBP                                             |
+//|   quiet hour, ATR 2.0 pips -> stop clamps to the 5.0 pip floor    |
+//|     pip value ~7.90/lot, so 5 x 7.90 = 39.50 per lot              |
+//|     50 / 39.50 = 1.26 lots                                        |
+//|   London, ATR 5.0 pips -> stop = 5.0 x 1.5 = 7.5 pips             |
+//|     7.5 x 7.90 = 59.25 per lot                                    |
+//|     50 / 59.25 = 0.84 lots                                        |
+//|                                                                   |
+//| Note what happened: the position got SMALLER as the stop got      |
+//| wider, so the money at risk stayed at 50 GBP in both cases. That  |
+//| is the entire point of pairing ATR stops with risk-based sizing.  |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double stopLossInPips)
 {
@@ -433,7 +798,7 @@ double NormaliseLotSize(double requestedLots)
 }
 
 //====================================================================
-// SECTION 8 - ORDER PLACEMENT
+// SECTION 10 - ORDER PLACEMENT
 //====================================================================
 
 //+------------------------------------------------------------------+
@@ -448,7 +813,14 @@ double NormaliseLotSize(double requestedLots)
 //+------------------------------------------------------------------+
 void OpenPosition(int direction)
 {
-   double lotSize = CalculateLotSize(InpStopLossPips);
+   // Resolve the distances ONCE, here, and pass them down. If we read
+   // the ATR again inside AttachStopsToOrder it could have moved, and
+   // the position would be sized against a different stop than the
+   // one actually placed - a silent risk-management bug.
+   double stopLossPips   = CurrentStopLossPips();
+   double takeProfitPips = CurrentTakeProfitPips();
+
+   double lotSize = CalculateLotSize(stopLossPips);
    if(lotSize <= 0.0)
       return;
 
@@ -463,7 +835,8 @@ void OpenPosition(int direction)
    double freeMarginAfterTrade = AccountFreeMarginCheck(Symbol(), orderType, lotSize);
    if(freeMarginAfterTrade <= 0.0 || GetLastError() == ERR_NOT_ENOUGH_MONEY)
    {
-      Print("Not enough free margin for a ", DoubleToString(lotSize, g_lotDigits), " lot position.");
+      Print("Not enough free margin for a ", DoubleToString(lotSize, g_lotDigits),
+            " lot position.");
       return;
    }
 
@@ -485,8 +858,8 @@ void OpenPosition(int direction)
          break;
 
       int errorCode = GetLastError();
-      PrintFormat("OrderSend attempt %d/%d failed with error %d (%s).",
-                  attempt, InpOrderRetryAttempts, errorCode, ErrorDescription(errorCode));
+      Print("OrderSend attempt ", attempt, "/", InpOrderRetryAttempts,
+            " failed with error ", errorCode, " (", ErrorDescription(errorCode), ").");
 
       if(!IsRetryableError(errorCode))
          return;                     // A permanent error - retrying will not help.
@@ -500,14 +873,21 @@ void OpenPosition(int direction)
       return;
    }
 
-   AttachStopsToOrder(ticket, direction);
+   Print("Opened ", (direction > 0 ? "LONG " : "SHORT "),
+         DoubleToString(lotSize, g_lotDigits), " lots, ticket ", ticket,
+         ". Stop ", DoubleToString(stopLossPips, 1),
+         " pips, target ", DoubleToString(takeProfitPips, 1), " pips",
+         (InpUseAtrStops ? " (ATR " + DoubleToString(GetAtrInPips(), 1) + " pips)." : "."));
+
+   AttachStopsToOrder(ticket, direction, stopLossPips, takeProfitPips);
 }
 
 //+------------------------------------------------------------------+
 //| Attach a stop loss and take profit to an order that is already    |
 //| open, respecting the broker's minimum stop distance.              |
 //+------------------------------------------------------------------+
-void AttachStopsToOrder(int ticket, int direction)
+void AttachStopsToOrder(int ticket, int direction,
+                        double stopLossPips, double takeProfitPips)
 {
    if(!OrderSelect(ticket, SELECT_BY_TICKET))
    {
@@ -518,23 +898,25 @@ void AttachStopsToOrder(int ticket, int direction)
    double openPrice = OrderOpenPrice();
 
    // The broker will not accept a stop closer to price than this.
-   // MODE_STOPLEVEL is in Points; convert it to price units.
+   // MODE_STOPLEVEL is in Points; convert it to price units. On M5
+   // with tight ATR stops this clamp fires far more often than it
+   // does on H1, so watch the log for it.
    double minimumStopDistance = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
 
    double stopLossPrice   = 0.0;
    double takeProfitPrice = 0.0;
 
-   if(InpStopLossPips > 0.0)
+   if(stopLossPips > 0.0)
    {
-      double stopDistance = MathMax(InpStopLossPips * g_pipSizeInPrice, minimumStopDistance);
+      double stopDistance = MathMax(stopLossPips * g_pipSizeInPrice, minimumStopDistance);
       stopLossPrice = (direction > 0) ? openPrice - stopDistance
                                       : openPrice + stopDistance;
       stopLossPrice = NormalizeDouble(stopLossPrice, Digits);
    }
 
-   if(InpTakeProfitPips > 0.0)
+   if(takeProfitPips > 0.0)
    {
-      double profitDistance = MathMax(InpTakeProfitPips * g_pipSizeInPrice, minimumStopDistance);
+      double profitDistance = MathMax(takeProfitPips * g_pipSizeInPrice, minimumStopDistance);
       takeProfitPrice = (direction > 0) ? openPrice + profitDistance
                                         : openPrice - profitDistance;
       takeProfitPrice = NormalizeDouble(takeProfitPrice, Digits);
@@ -553,8 +935,9 @@ void AttachStopsToOrder(int ticket, int direction)
       }
 
       int errorCode = GetLastError();
-      PrintFormat("OrderModify attempt %d/%d on ticket %d failed with error %d (%s).",
-                  attempt, InpOrderRetryAttempts, ticket, errorCode, ErrorDescription(errorCode));
+      Print("OrderModify attempt ", attempt, "/", InpOrderRetryAttempts,
+            " on ticket ", ticket, " failed with error ", errorCode,
+            " (", ErrorDescription(errorCode), ").");
 
       if(!IsRetryableError(errorCode))
          break;
@@ -567,9 +950,11 @@ void AttachStopsToOrder(int ticket, int direction)
 }
 
 //+------------------------------------------------------------------+
-//| Close this EA's open position at market.                          |
+//| Close this EA's open position at market. The reason string goes   |
+//| straight into the log, which makes the Experts tab readable when  |
+//| you are working out why a trade ended.                            |
 //+------------------------------------------------------------------+
-void ClosePosition()
+void ClosePosition(string reason)
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -590,13 +975,14 @@ void ClosePosition()
 
          if(OrderClose(ticket, lots, NormalizeDouble(closePrice, Digits), slippage, clrGray))
          {
-            Print("Closed ticket ", ticket, " on an opposite signal.");
+            Print("Closed ticket ", ticket, ": ", reason, ".");
             break;
          }
 
          int errorCode = GetLastError();
-         PrintFormat("OrderClose attempt %d/%d on ticket %d failed with error %d (%s).",
-                     attempt, InpOrderRetryAttempts, ticket, errorCode, ErrorDescription(errorCode));
+         Print("OrderClose attempt ", attempt, "/", InpOrderRetryAttempts,
+               " on ticket ", ticket, " failed with error ", errorCode,
+               " (", ErrorDescription(errorCode), ").");
 
          if(!IsRetryableError(errorCode))
             break;
@@ -611,21 +997,24 @@ void ClosePosition()
 }
 
 //====================================================================
-// SECTION 9 - TRADE MANAGEMENT
+// SECTION 11 - TRADE MANAGEMENT
 //====================================================================
 
 //+------------------------------------------------------------------+
-//| A simple trailing stop.                                           |
+//| A trailing stop.                                                  |
 //|                                                                   |
 //| Once price has moved in our favour by more than the trailing      |
 //| distance, keep the stop that far behind the current price. The    |
 //| "step" input stops us from spamming the server with a modify      |
 //| request on every single tick.                                     |
+//|                                                                   |
+//| In ATR mode the distance breathes with volatility, exactly like   |
+//| the initial stop does.                                            |
 //+------------------------------------------------------------------+
 void ApplyTrailingStop()
 {
-   double trailDistance = InpTrailingStopPips * g_pipSizeInPrice;
-   double trailStep     = InpTrailingStepPips * g_pipSizeInPrice;
+   double trailDistance = CurrentTrailingPips() * g_pipSizeInPrice;
+   double trailStep     = InpTrailingStepPips  * g_pipSizeInPrice;
    double minimumStop   = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
 
    if(trailDistance < minimumStop)
@@ -649,7 +1038,7 @@ void ApplyTrailingStop()
          proposedStop = NormalizeDouble(Bid - trailDistance, Digits);
 
          // Only ever move the stop UP, and only by a meaningful amount.
-         if(proposedStop <= OrderOpenPrice())                        continue;
+         if(proposedStop <= OrderOpenPrice())                            continue;
          if(currentStop > 0.0 && proposedStop < currentStop + trailStep) continue;
       }
       else // OP_SELL
@@ -657,7 +1046,7 @@ void ApplyTrailingStop()
          proposedStop = NormalizeDouble(Ask + trailDistance, Digits);
 
          // Only ever move the stop DOWN.
-         if(proposedStop >= OrderOpenPrice())                        continue;
+         if(proposedStop >= OrderOpenPrice())                            continue;
          if(currentStop > 0.0 && proposedStop > currentStop - trailStep) continue;
       }
 
@@ -665,14 +1054,14 @@ void ApplyTrailingStop()
                       OrderTakeProfit(), 0, clrAqua))
       {
          int errorCode = GetLastError();
-         PrintFormat("Trailing stop update failed on ticket %d: error %d (%s).",
-                     OrderTicket(), errorCode, ErrorDescription(errorCode));
+         Print("Trailing stop update failed on ticket ", OrderTicket(),
+               ": error ", errorCode, " (", ErrorDescription(errorCode), ").");
       }
    }
 }
 
 //====================================================================
-// SECTION 10 - ERROR HANDLING UTILITIES
+// SECTION 12 - ERROR HANDLING UTILITIES
 //====================================================================
 
 //+------------------------------------------------------------------+
