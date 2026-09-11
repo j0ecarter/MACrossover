@@ -3,8 +3,9 @@
 # install_to_mt4.sh - symlink this repo's MQL4 sources into the
 # MetaTrader 4 data folder.
 #
-#   Experts/MACrossover.mq4    -> MQL4/Experts/
-#   Indicators/CandleTimer.mq4 -> MQL4/Indicators/
+#   Experts/MACrossover.mq4      -> MQL4/Experts/
+#   Indicators/CandleTimer.mq4   -> MQL4/Indicators/
+#   Indicators/FleetMonitor.mq4  -> MQL4/Indicators/
 #
 # Symlinks rather than copies, so the files MetaEditor compiles and
 # the files git tracks are the same files. Edit in VS Code, compile
@@ -108,6 +109,7 @@ link_source()
 
 link_source "Experts"    "Experts"    "MACrossover.mq4"
 link_source "Indicators" "Indicators" "CandleTimer.mq4"
+link_source "Indicators" "Indicators" "FleetMonitor.mq4"
 
 echo
 echo "Next: in MetaEditor open each file and press F7 to compile."

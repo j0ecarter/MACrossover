@@ -46,6 +46,10 @@ input color   InpImminentColour    = clrTomato;   // Used in the final few secon
 input int     InpWarningSeconds    = 60;    // Switch to the warning colour below this
 input int     InpImminentSeconds   = 10;    // Switch to the imminent colour below this
 
+input string  InpSectionHealth     = "--- Health reporting ---";
+input bool    InpPublishHeartbeat  = true;          // Let FleetMonitor see this is alive
+input string  InpComponentRole     = "CandleTimer"; // Name this instance reports under
+
 input string  InpSectionText       = "--- Text ---";
 input string  InpLabelPrefix       = "Candle closes in ";
 input bool    InpShowTimeframe     = true;  // Prefix the timeframe, e.g. "M5 | "
@@ -65,6 +69,14 @@ int      g_serverMinusLocalSeconds = 0;
 // Set true once a tick has been seen, so we do not count down from a
 // clock offset we have not measured yet.
 bool     g_haveClockOffset = false;
+
+// GlobalVariable name this indicator heartbeats under, so
+// FleetMonitor.mq4 can confirm it is loaded. The naming convention is
+// shared with MACrossover.mq4 and FleetMonitor.mq4 - change it in one
+// and you must change it in all three.
+#define GLOBAL_PREFIX "MACX_"
+
+string   g_heartbeatName   = "";
 
 //====================================================================
 // LIFECYCLE
@@ -89,8 +101,12 @@ int OnInit()
    g_serverMinusLocalSeconds = (int)(TimeCurrent() - TimeLocal());
    g_haveClockOffset = true;
 
+   g_heartbeatName = GLOBAL_PREFIX + Symbol() + "_" + TimeframeToText(Period())
+                   + "_" + InpComponentRole + "_HB";
+
    EventSetTimer(1);
    UpdateLabel();
+   PublishHeartbeat();
 
    Print("CandleTimer attached to ", Symbol(), " ", TimeframeToText(Period()),
          ". Label at corner ", EnumToString(InpCorner),
@@ -108,6 +124,14 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    ObjectDelete(0, g_labelName);
+
+   // Withdraw the heartbeat only on a genuine removal. A recompile or
+   // a timeframe switch also calls OnDeinit and re-initialises at
+   // once; deleting on those would make FleetMonitor flash a false
+   // alarm every time you press F7.
+   if(reason == REASON_REMOVE || reason == REASON_CHARTCLOSE)
+      GlobalVariableDel(g_heartbeatName);
+
    ChartRedraw();
 }
 
@@ -117,6 +141,23 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    UpdateLabel();
+   PublishHeartbeat();
+}
+
+//+------------------------------------------------------------------+
+//| Report in, so FleetMonitor can tell this indicator is loaded.     |
+//|                                                                   |
+//| TimeLocal() rather than TimeCurrent(), for the same reason the    |
+//| countdown itself uses it: TimeCurrent() stops advancing when      |
+//| quotes stop arriving, which would make a healthy indicator look   |
+//| dead every quiet night.                                           |
+//+------------------------------------------------------------------+
+void PublishHeartbeat()
+{
+   if(!InpPublishHeartbeat || IsTesting() || IsOptimization())
+      return;
+
+   GlobalVariableSet(g_heartbeatName, (double)TimeLocal());
 }
 
 //+------------------------------------------------------------------+

@@ -98,6 +98,11 @@ input string  InpSectionJournal         = "--- Journalling ---";
 input bool    InpWriteJournal           = true;  // Write every entry and exit to a CSV
 input string  InpJournalFileName        = "";    // Blank = <symbol>_MACrossover_journal.csv
 
+input string  InpSectionHealth          = "--- Health reporting ---";
+input bool    InpPublishHeartbeat       = true;  // Let FleetMonitor see that this EA is alive
+input int     InpHeartbeatSeconds       = 5;     // How often to report in
+input string  InpComponentRole          = "EA";  // Name this instance reports under
+
 input string  InpSectionExecution       = "--- Execution ---";
 input int     InpMagicNumber            = 20260909;// Unique ID so this EA only touches its own trades
 input double  InpMaxSlippagePips        = 1.0;   // Maximum accepted price deviation
@@ -153,6 +158,29 @@ string   g_journalFileName       = "";
 // Set once the daily loss cap has tripped, so the log line is
 // printed once rather than on every bar for the rest of the day.
 datetime g_dailyLossReportedDay  = 0;
+
+//--------------------------------------------------------------------
+// Health reporting.
+//
+// An EA on one chart cannot see an EA on another - MT4 exposes no
+// process list. The only state shared between charts in a terminal is
+// the GlobalVariable pool, so this EA publishes a heartbeat and a
+// status bitmask there and FleetMonitor.mq4 reads them back.
+//
+// These bit values MUST match the #defines in FleetMonitor.mq4.
+//--------------------------------------------------------------------
+#define STATUS_OK              0
+#define STATUS_TRADE_DISABLED  1    // Terminal or broker forbids trading
+#define STATUS_DISCONNECTED    2    // No connection to the trade server
+#define STATUS_COOLDOWN        4    // Paused after consecutive losses
+#define STATUS_DAILY_CAP       8    // Daily loss cap reached
+#define STATUS_OUT_OF_SESSION  16   // Outside the configured trading hours
+#define STATUS_UNPROTECTED     32   // A position is open with no stop loss
+
+#define GLOBAL_PREFIX          "MACX_"
+
+string   g_heartbeatName         = "";
+string   g_statusName            = "";
 
 //====================================================================
 // SECTION 3 - LIFECYCLE
@@ -272,6 +300,18 @@ int OnInit()
    if(g_openTicket >= 0)
       Print("Adopted an existing position, ticket ", g_openTicket, ".");
 
+   // --- Health reporting -------------------------------------------
+   g_heartbeatName = GLOBAL_PREFIX + Symbol() + "_" + TimeframeToText(Period())
+                   + "_" + InpComponentRole + "_HB";
+   g_statusName    = GLOBAL_PREFIX + Symbol() + "_" + TimeframeToText(Period())
+                   + "_" + InpComponentRole + "_ST";
+
+   if(ShouldPublishHeartbeat())
+   {
+      EventSetTimer(MathMax(1, InpHeartbeatSeconds));
+      PublishHeartbeat();
+   }
+
    ReportStartupState();
 
    return(INIT_SUCCEEDED);
@@ -335,7 +375,32 @@ void ReportStartupState()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
+
+   // Withdraw the heartbeat only when this instance is genuinely going
+   // away. A recompile, a parameter change or a timeframe switch all
+   // call OnDeinit and then immediately re-initialise - deleting on
+   // those would make FleetMonitor flash a false alarm every time you
+   // press F7.
+   if(reason == REASON_REMOVE || reason == REASON_CHARTCLOSE)
+   {
+      GlobalVariableDel(g_heartbeatName);
+      GlobalVariableDel(g_statusName);
+   }
+
    Print(InpTradeComment, " stopped. Reason code: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Timer, used only to keep the heartbeat fresh.                     |
+//|                                                                   |
+//| It has to be a timer rather than OnTick: a quiet market delivers  |
+//| no ticks for minutes at a time, and a heartbeat that only updated |
+//| on ticks would report a perfectly healthy EA as dead every night. |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   PublishHeartbeat();
 }
 
 //+------------------------------------------------------------------+
@@ -346,6 +411,8 @@ void OnTick()
    // A position may have closed on its stop or target since the last
    // tick. Notice that first, so the journal and the loss counters
    // are up to date before anything else reads them.
+   PublishHeartbeat();
+
    DetectAndJournalClosedPosition();
 
    if(InpUseTrailingStop)
@@ -1730,5 +1797,84 @@ string ErrorDescription(int errorCode)
       case 149: return("opposite position already open - hedging not allowed");
       default:  return("unmapped error " + IntegerToString(errorCode));
    }
+}
+//+------------------------------------------------------------------+
+
+//====================================================================
+// SECTION 15 - HEALTH REPORTING
+//--------------------------------------------------------------------
+// Two GlobalVariables per instance, shared across every chart in the
+// terminal, read back by FleetMonitor.mq4:
+//
+//   MACX_<SYMBOL>_<TF>_<ROLE>_HB   when this EA last reported in
+//   MACX_<SYMBOL>_<TF>_<ROLE>_ST   what it is currently able to do
+//
+// The heartbeat carries TimeLocal(), NOT TimeCurrent(). TimeCurrent()
+// is the timestamp of the last quote received, so it stops advancing
+// in a quiet market and a healthy EA would read as dead. The PC clock
+// always advances.
+//====================================================================
+
+//+------------------------------------------------------------------+
+//| Heartbeats are pointless in the tester and would slow an          |
+//| optimisation run down for nothing.                                |
+//+------------------------------------------------------------------+
+bool ShouldPublishHeartbeat()
+{
+   return(InpPublishHeartbeat && !IsTesting() && !IsOptimization());
+}
+
+//+------------------------------------------------------------------+
+//| Write the heartbeat and the current status bitmask.               |
+//+------------------------------------------------------------------+
+void PublishHeartbeat()
+{
+   if(!ShouldPublishHeartbeat())
+      return;
+
+   GlobalVariableSet(g_heartbeatName, (double)TimeLocal());
+   GlobalVariableSet(g_statusName,    (double)ComputeStatusFlags());
+}
+
+//+------------------------------------------------------------------+
+//| What is this EA currently able to do?                             |
+//|                                                                   |
+//| A heartbeat alone only proves the code is executing. It does not  |
+//| distinguish "running and working" from "running but unable to     |
+//| place a trade", and those look identical from the outside while   |
+//| being very different things to know about.                        |
+//|                                                                   |
+//| Note which of these are faults and which are the EA behaving      |
+//| correctly: being outside the session window or inside a cooldown  |
+//| is the EA doing its job, and FleetMonitor renders them as         |
+//| information rather than as alarms.                                |
+//+------------------------------------------------------------------+
+int ComputeStatusFlags()
+{
+   int flags = STATUS_OK;
+
+   if(!IsConnected())
+      flags |= STATUS_DISCONNECTED;
+
+   if(!IsTradeAllowed())
+      flags |= STATUS_TRADE_DISABLED;
+
+   if(g_cooldownUntil > 0 && TimeCurrent() < g_cooldownUntil)
+      flags |= STATUS_COOLDOWN;
+
+   if(HasBreachedDailyLossCap())
+      flags |= STATUS_DAILY_CAP;
+
+   if(InpUseSessionFilter && !IsWithinTradingSession())
+      flags |= STATUS_OUT_OF_SESSION;
+
+   // The one genuinely alarming state: money in the market with
+   // nothing protecting it. Happens when OrderModify fails after an
+   // OrderSend succeeded.
+   int ticket = FindOpenTicket();
+   if(ticket >= 0 && OrderSelect(ticket, SELECT_BY_TICKET) && OrderStopLoss() == 0.0)
+      flags |= STATUS_UNPROTECTED;
+
+   return(flags);
 }
 //+------------------------------------------------------------------+

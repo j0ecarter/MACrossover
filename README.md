@@ -72,6 +72,45 @@ Every one of these is recomputed from the broker's closed-trade history
 rather than held in a variable, so restarting the terminal cannot reset
 a limit that has already tripped.
 
+### A health monitor
+
+An EA can die quietly: removed from a chart, AutoTrading toggled off,
+the terminal disconnected, a chart closed by accident. Nothing in MT4
+tells you, and the first symptom is usually noticing days later that a
+pair stopped trading.
+
+`FleetMonitor` puts a panel on one chart showing whether everything you
+expect to be running actually is:
+
+```
+FLEET  |  NOT ALL RUNNING  (2/3)
+  GBPUSD M5 EA              RUNNING
+  EURUSD M5 EA              RUNNING - AutoTrading off
+  USDJPY M5 EA              NOT LOADED
+  terminal: connected, AutoTrading on  |  18:42:07
+```
+
+MT4 gives an EA on one chart no way to see an EA on another - there is
+no process list and no cross-chart API. The only state shared between
+charts in a terminal is the GlobalVariable pool, so each component
+publishes a heartbeat and a status bitmask there and the monitor reads
+them back.
+
+The heartbeat carries `TimeLocal()`, not `TimeCurrent()`. That
+distinction is the whole trick: `TimeCurrent()` is the timestamp of the
+last quote received, so it stops advancing in a quiet market and a
+perfectly healthy EA would read as dead every night. The PC clock
+always advances, and a timer rather than `OnTick` does the writing.
+
+The status bitmask matters as much as the heartbeat, because a
+heartbeat alone only proves the code is executing - it cannot tell
+"running and working" from "running but unable to place a trade". The
+monitor also distinguishes faults from the EA correctly doing nothing:
+being outside the session window is information, having AutoTrading
+switched off is an alarm. And it flags components that are heartbeating
+but *not* in your expected list, which catches the opposite failure - an
+EA left running on a chart you had forgotten about.
+
 ### A trade journal
 
 Every entry and exit is appended to `MQL4/Files/<symbol>_MACrossover_journal.csv`
@@ -141,6 +180,7 @@ is now anchored to the close time that caused it.
 ```
 Experts/MACrossover.mq4       The Expert Advisor
 Indicators/CandleTimer.mq4    "Candle closes in MM:SS" chart label
+Indicators/FleetMonitor.mq4   Is everything actually running?
 tools/find_mt4.sh             Locate the Wine-hosted MT4 data folder
 tools/install_to_mt4.sh       Symlink both sources into MQL4/
 tools/build.sh                Headless compile via metaeditor.exe
