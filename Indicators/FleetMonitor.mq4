@@ -29,11 +29,13 @@
 //|                                                                   |
 //|  EXPECTED-COMPONENTS FORMAT                                       |
 //|    Comma-separated SYMBOL:TIMEFRAME:ROLE, for example             |
-//|      GBPUSD:M5:EA,EURUSD:M5:EA,GBPUSD:M5:CandleTimer             |
+//|      GBPUSD:M5:EA,EURUSD:M5:EA,XAUUSD:M15:EA                     |
 //|                                                                   |
-//|    ROLE is whatever the component publishes under - "EA" for      |
-//|    MACrossover, "CandleTimer" for the countdown - and defaults    |
-//|    to "EA" when omitted, so GBPUSD:M5 also works.                 |
+//|    ROLE is whatever the component publishes under, and defaults   |
+//|    to "EA" when omitted - so GBPUSD:M5 also works. MACrossover is |
+//|    currently the only thing that publishes; CandleTimer           |
+//|    deliberately does not, because a label that has stopped        |
+//|    drawing is visible on the chart without a monitor for it.      |
 //|                                                                   |
 //|    Anything heartbeating that is NOT listed here shows as         |
 //|    "not declared". That is deliberate rather than noise: it       |
@@ -50,7 +52,7 @@
 //====================================================================
 
 input string  InpSectionFleet      = "--- What should be running ---";
-input string  InpExpectedComponents = "GBPUSD:M5:EA,EURUSD:M5:EA,GBPUSD:M5:CandleTimer,EURUSD:M5:CandleTimer";
+input string  InpExpectedComponents = "GBPUSD:M5:EA,EURUSD:M5:EA";
 input int     InpStaleSeconds      = 30;   // No heartbeat for this long = stalled
 input bool    InpShowUnexpected    = true; // Also list components you did NOT declare
 
