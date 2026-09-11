@@ -38,7 +38,7 @@ input int     InpYDistance         = 95;    // Pixels from that corner, vertical
 
 input string  InpSectionAppearance = "--- Appearance ---";
 input string  InpFontName          = "Consolas";  // A monospaced font stops the label jittering
-input int     InpFontSize          = 13;
+input int     InpFontSize          = 11;
 input bool    InpAutoContrastColour = true; // Match the text to whatever it sits on
 input color   InpNormalColour      = clrWhite;    // Used only when auto-contrast is off
 input color   InpWarningColour     = clrGold;     // Used inside the warning window
@@ -48,7 +48,8 @@ input string  InpSectionPanel      = "--- Background panel ---";
 input bool    InpShowPanel         = true;              // Solid backdrop behind the text
 input color   InpPanelColour       = C'22,26,34';       // Dark slate
 input color   InpPanelBorderColour = C'74,84,100';
-input int     InpPanelPadding      = 8;    // Pixels of margin inside the panel
+input int     InpPanelOpacity      = 75;   // 100 = solid, lower = more of the chart shows through
+input int     InpPanelPadding      = 7;    // Pixels of margin inside the panel
 input int     InpPanelExtraWidth   = 0;    // Nudge the auto-width if it misjudges
 input int     InpWarningSeconds    = 60;    // Switch to the warning colour below this
 input int     InpImminentSeconds   = 10;    // Switch to the imminent colour below this
@@ -272,9 +273,9 @@ void CreateBackgroundPanel()
    }
 
    ObjectSetInteger(0, g_panelName, OBJPROP_CORNER,      InpCorner);
-   ObjectSetInteger(0, g_panelName, OBJPROP_BGCOLOR,     InpPanelColour);
+   ObjectSetInteger(0, g_panelName, OBJPROP_BGCOLOR,     BlendTowardsChart(InpPanelColour, InpPanelOpacity));
    ObjectSetInteger(0, g_panelName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, g_panelName, OBJPROP_COLOR,       InpPanelBorderColour);
+   ObjectSetInteger(0, g_panelName, OBJPROP_COLOR,       BlendTowardsChart(InpPanelBorderColour, InpPanelOpacity));
    ObjectSetInteger(0, g_panelName, OBJPROP_WIDTH,       1);
    ObjectSetInteger(0, g_panelName, OBJPROP_SELECTABLE,  false);
    ObjectSetInteger(0, g_panelName, OBJPROP_SELECTED,    false);
@@ -309,6 +310,11 @@ void ResizeBackgroundPanel(int textLengthChars)
    ObjectSetInteger(0, g_panelName, OBJPROP_YDISTANCE, MathMax(0, InpYDistance - InpPanelPadding));
    ObjectSetInteger(0, g_panelName, OBJPROP_XSIZE,     panelWidth);
    ObjectSetInteger(0, g_panelName, OBJPROP_YSIZE,     panelHeight);
+
+   // Re-applied every second, so a chart theme change or an opacity
+   // tweak takes effect without reloading the indicator.
+   ObjectSetInteger(0, g_panelName, OBJPROP_BGCOLOR, BlendTowardsChart(InpPanelColour, InpPanelOpacity));
+   ObjectSetInteger(0, g_panelName, OBJPROP_COLOR,   BlendTowardsChart(InpPanelBorderColour, InpPanelOpacity));
 }
 
 //+------------------------------------------------------------------+
@@ -373,7 +379,7 @@ color ContrastingTextColour()
    // What the text actually sits on: the panel when there is one,
    // otherwise the chart itself.
    int backgroundColour = InpShowPanel
-                        ? (int)InpPanelColour
+                        ? (int)BlendTowardsChart(InpPanelColour, InpPanelOpacity)
                         : (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
 
    int redChannel   =  backgroundColour        & 0xFF;
@@ -437,5 +443,46 @@ string TimeframeToText(int timeframeMinutes)
       case PERIOD_MN1: return("MN1");
       default:         return("M" + IntegerToString(timeframeMinutes));
    }
+}
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| The panel colour, mixed towards the chart's own background.       |
+//|                                                                   |
+//| MT4 chart objects have no alpha channel - OBJPROP_BGCOLOR is a    |
+//| flat opaque colour and there is no way to make a rectangle label  |
+//| genuinely see-through. So rather than fake transparency, this     |
+//| blends the panel colour with the chart background, which reads as |
+//| a tint instead of a slab.                                         |
+//|                                                                   |
+//| Worth being clear that this is not merely the available option,   |
+//| it is the correct one: the panel exists to stop the chart grid    |
+//| running through the text. Genuine transparency would bring that   |
+//| problem straight back.                                            |
+//|                                                                   |
+//| MQL colours are packed 0x00BBGGRR, hence the channel order.       |
+//+------------------------------------------------------------------+
+color BlendTowardsChart(color foreground, int opacityPercent)
+{
+   if(opacityPercent >= 100)
+      return(foreground);
+
+   if(opacityPercent <= 0)
+      return((color)ChartGetInteger(0, CHART_COLOR_BACKGROUND));
+
+   int front = (int)foreground;
+   int back  = (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+
+   double weight = opacityPercent / 100.0;
+
+   int red   = (int)MathRound(( front        & 0xFF) * weight + ( back        & 0xFF) * (1.0 - weight));
+   int green = (int)MathRound(((front >> 8)  & 0xFF) * weight + ((back >> 8)  & 0xFF) * (1.0 - weight));
+   int blue  = (int)MathRound(((front >> 16) & 0xFF) * weight + ((back >> 16) & 0xFF) * (1.0 - weight));
+
+   red   = (int)MathMax(0, MathMin(255, red));
+   green = (int)MathMax(0, MathMin(255, green));
+   blue  = (int)MathMax(0, MathMin(255, blue));
+
+   return((color)(blue * 65536 + green * 256 + red));
 }
 //+------------------------------------------------------------------+
