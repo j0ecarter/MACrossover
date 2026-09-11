@@ -52,7 +52,19 @@
 //====================================================================
 
 input string  InpSectionFleet      = "--- What should be running ---";
-input string  InpExpectedComponents = "GBPUSD:M5:EA,EURUSD:M5:EA";
+//
+// NOTE ON CHANGING THIS LIST
+//   MT4 saves each attached indicator's input values inside the CHART,
+//   keyed by input name, and those saved values override the defaults
+//   below. Editing this file and recompiling therefore does NOT change
+//   an instance that is already on a chart - you must edit it in
+//   Ctrl+I -> Edit -> Inputs, or remove and re-add the indicator.
+//
+//   (This input was renamed from InpExpectedComponents in order to
+//   orphan a stale saved value. Renaming an input is the one way to
+//   force every existing instance back to the default, because the
+//   old saved entry no longer matches anything.)
+input string  InpMonitoredComponents = "GBPUSD:M5:EA,EURUSD:M5:EA";
 input int     InpStaleSeconds      = 30;   // No heartbeat for this long = stalled
 input bool    InpShowUnexpected    = true; // Also list components you did NOT declare
 
@@ -335,7 +347,7 @@ void RefreshPanel()
 
    if(expectedCount == 0)
    {
-      headerText   = "FLEET  |  nothing declared in InpExpectedComponents";
+      headerText   = "FLEET  |  nothing declared in InpMonitoredComponents";
       headerColour = InpWarnColour;
    }
    else if(runningCount == 0)
@@ -419,7 +431,7 @@ int AppendUnexpectedComponents(string seenNames, int lineIndex)
 //+------------------------------------------------------------------+
 int SplitExpectedComponents(string &entries[])
 {
-   string raw = InpExpectedComponents;
+   string raw = InpMonitoredComponents;
    StringTrimLeft(raw);
    StringTrimRight(raw);
 
