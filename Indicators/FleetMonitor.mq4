@@ -50,17 +50,26 @@ input bool    InpShowUnexpected    = true; // Also list components you did NOT d
 input string  InpSectionPosition   = "--- Position ---";
 input ENUM_BASE_CORNER InpCorner   = CORNER_LEFT_UPPER;
 input int     InpXDistance         = 12;
-input int     InpYDistance         = 130;  // Below the one-click panel and the candle timer
+input int     InpYDistance         = 152;  // Clear of the one-click panel and CandleTimer's backdrop
 
 input string  InpSectionAppearance = "--- Appearance ---";
 input string  InpFontName          = "Consolas";
-input int     InpFontSize          = 10;
-input int     InpLineSpacing       = 15;   // Pixels between rows
+input int     InpFontSize          = 12;
+input int     InpLineSpacing       = 18;   // Pixels between rows
 input int     InpRefreshSeconds    = 2;
-input bool    InpAutoContrastColour = true;
-input color   InpNeutralColour     = clrSilver;    // Used when auto-contrast is off
-input color   InpOkColour          = clrMediumSeaGreen;
-input color   InpWarnColour        = clrGoldenrod;
+
+input string  InpSectionPanel      = "--- Background panel ---";
+input bool    InpShowPanel         = true;              // Solid backdrop behind the text
+input color   InpPanelColour       = C'22,26,34';       // Dark slate
+input color   InpPanelBorderColour = C'74,84,100';
+input int     InpPanelPadding      = 10;   // Pixels of margin inside the panel
+input int     InpPanelExtraWidth   = 0;    // Nudge the auto-width if it misjudges
+
+input string  InpSectionColours    = "--- Text colours ---";
+input bool    InpAutoContrastColour = true;             // Match neutral text to the backdrop
+input color   InpNeutralColour     = clrWhite;          // Used when auto-contrast is off
+input color   InpOkColour          = clrSpringGreen;
+input color   InpWarnColour        = clrGold;
 input color   InpFailColour        = clrTomato;
 
 //====================================================================
@@ -89,6 +98,13 @@ input color   InpFailColour        = clrTomato;
 
 string g_objectPrefix = "FleetMon_";
 
+// Widest line and number of lines rendered on the last refresh, used
+// to size the backdrop. Measured in characters - safe only because
+// the default font is monospaced, which is why Consolas is the
+// default and why changing it may need InpPanelExtraWidth.
+int    g_widestLineChars = 0;
+int    g_renderedLines   = 0;
+
 //====================================================================
 // LIFECYCLE
 //====================================================================
@@ -100,6 +116,11 @@ int OnInit()
       Print("FleetMonitor: InpStaleSeconds below 5 will produce false alarms. ",
             "Components only heartbeat every few seconds.");
    }
+
+   // The backdrop must exist BEFORE the first text label. MT4 draws
+   // chart objects in creation order, so a panel created later would
+   // paint over the very text it is meant to sit behind.
+   EnsureBackgroundPanel();
 
    EventSetTimer(MathMax(1, InpRefreshSeconds));
    RefreshPanel();
@@ -224,6 +245,9 @@ bool FlagsIndicateProblem(int flags)
 //+------------------------------------------------------------------+
 void RefreshPanel()
 {
+   g_widestLineChars = 0;
+   g_renderedLines   = 0;
+
    string expectedEntries[];
    int    expectedCount = SplitExpectedComponents(expectedEntries);
 
@@ -341,9 +365,12 @@ void RefreshPanel()
       SetPanelLine(lineIndex++, terminalState, terminalColour);
    }
 
-   // Blank any rows left over from a previous, longer render.
+   // Blank any rows left over from a previous, longer render. These
+   // deliberately do not count towards the panel size.
    for(int blank = lineIndex; blank < MAX_DISPLAY_LINES; blank++)
       SetPanelLine(blank, "", NeutralTextColour());
+
+   ResizeBackgroundPanel();
 
    ChartRedraw();
 }
@@ -451,6 +478,16 @@ void SetPanelLine(int lineIndex, string text, color textColour)
    ObjectSetInteger(0, objectName, OBJPROP_YDISTANCE, InpYDistance + lineIndex * InpLineSpacing);
    ObjectSetString (0, objectName, OBJPROP_TEXT,      text);
    ObjectSetInteger(0, objectName, OBJPROP_COLOR,     textColour);
+
+   // Remember the extent of the real content, for the backdrop.
+   if(StringLen(text) > 0)
+   {
+      if(StringLen(text) > g_widestLineChars)
+         g_widestLineChars = StringLen(text);
+
+      if(lineIndex + 1 > g_renderedLines)
+         g_renderedLines = lineIndex + 1;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -460,6 +497,73 @@ void RemoveAllPanelObjects()
 {
    for(int i = 0; i < MAX_DISPLAY_LINES; i++)
       ObjectDelete(0, g_objectPrefix + IntegerToString(i));
+
+   ObjectDelete(0, g_objectPrefix + "BG");
+}
+
+//+------------------------------------------------------------------+
+//| Create the solid backdrop the text sits on.                       |
+//|                                                                   |
+//| Without it the chart's grid lines run straight through the        |
+//| glyphs. Thin coloured text over a dotted grid is legible in a     |
+//| screenshot and genuinely hard to read at a glance, which defeats  |
+//| the point of a status panel you are supposed to be able to check  |
+//| without concentrating.                                            |
+//+------------------------------------------------------------------+
+void EnsureBackgroundPanel()
+{
+   if(!InpShowPanel)
+      return;
+
+   string objectName = g_objectPrefix + "BG";
+
+   if(ObjectFind(0, objectName) < 0)
+   {
+      if(!ObjectCreate(0, objectName, OBJ_RECTANGLE_LABEL, 0, 0, 0))
+         return;
+   }
+
+   ObjectSetInteger(0, objectName, OBJPROP_CORNER,      InpCorner);
+   ObjectSetInteger(0, objectName, OBJPROP_BGCOLOR,     InpPanelColour);
+   ObjectSetInteger(0, objectName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, objectName, OBJPROP_COLOR,       InpPanelBorderColour);
+   ObjectSetInteger(0, objectName, OBJPROP_WIDTH,       1);
+   ObjectSetInteger(0, objectName, OBJPROP_SELECTABLE,  false);
+   ObjectSetInteger(0, objectName, OBJPROP_SELECTED,    false);
+   ObjectSetInteger(0, objectName, OBJPROP_HIDDEN,      true);
+   ObjectSetInteger(0, objectName, OBJPROP_BACK,        false);
+}
+
+//+------------------------------------------------------------------+
+//| Fit the backdrop to whatever was just rendered.                   |
+//|                                                                   |
+//| Character width is estimated at 0.62 x the font size, which is    |
+//| about right for Consolas. A proportional font will misjudge it -  |
+//| InpPanelExtraWidth exists for that case.                          |
+//+------------------------------------------------------------------+
+void ResizeBackgroundPanel()
+{
+   if(!InpShowPanel)
+      return;
+
+   string objectName = g_objectPrefix + "BG";
+
+   if(ObjectFind(0, objectName) < 0)
+      EnsureBackgroundPanel();
+
+   int estimatedCharWidth = (int)MathCeil(InpFontSize * 0.62);
+
+   int panelWidth  = g_widestLineChars * estimatedCharWidth
+                   + InpPanelPadding * 2 + InpPanelExtraWidth;
+   int panelHeight = g_renderedLines * InpLineSpacing + InpPanelPadding * 2;
+
+   if(panelWidth  < 80) panelWidth  = 80;
+   if(panelHeight < 30) panelHeight = 30;
+
+   ObjectSetInteger(0, objectName, OBJPROP_XDISTANCE, MathMax(0, InpXDistance - InpPanelPadding));
+   ObjectSetInteger(0, objectName, OBJPROP_YDISTANCE, MathMax(0, InpYDistance - InpPanelPadding));
+   ObjectSetInteger(0, objectName, OBJPROP_XSIZE,     panelWidth);
+   ObjectSetInteger(0, objectName, OBJPROP_YSIZE,     panelHeight);
 }
 
 //+------------------------------------------------------------------+
@@ -472,7 +576,11 @@ color NeutralTextColour()
    if(!InpAutoContrastColour)
       return(InpNeutralColour);
 
-   int backgroundColour = (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   // What the text actually sits on: the panel when there is one,
+   // otherwise the chart itself.
+   int backgroundColour = InpShowPanel
+                        ? (int)InpPanelColour
+                        : (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
 
    int redChannel   =  backgroundColour        & 0xFF;
    int greenChannel = (backgroundColour >> 8)  & 0xFF;

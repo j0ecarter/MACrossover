@@ -38,11 +38,18 @@ input int     InpYDistance         = 95;    // Pixels from that corner, vertical
 
 input string  InpSectionAppearance = "--- Appearance ---";
 input string  InpFontName          = "Consolas";  // A monospaced font stops the label jittering
-input int     InpFontSize          = 11;
-input bool    InpAutoContrastColour = true; // Pick black or white to suit the chart background
-input color   InpNormalColour      = clrSilver;   // Used only when auto-contrast is off
+input int     InpFontSize          = 13;
+input bool    InpAutoContrastColour = true; // Match the text to whatever it sits on
+input color   InpNormalColour      = clrWhite;    // Used only when auto-contrast is off
 input color   InpWarningColour     = clrGold;     // Used inside the warning window
 input color   InpImminentColour    = clrTomato;   // Used in the final few seconds
+
+input string  InpSectionPanel      = "--- Background panel ---";
+input bool    InpShowPanel         = true;              // Solid backdrop behind the text
+input color   InpPanelColour       = C'22,26,34';       // Dark slate
+input color   InpPanelBorderColour = C'74,84,100';
+input int     InpPanelPadding      = 8;    // Pixels of margin inside the panel
+input int     InpPanelExtraWidth   = 0;    // Nudge the auto-width if it misjudges
 input int     InpWarningSeconds    = 60;    // Switch to the warning colour below this
 input int     InpImminentSeconds   = 10;    // Switch to the imminent colour below this
 
@@ -61,6 +68,7 @@ input bool    InpShowTimeframe     = true;  // Prefix the timeframe, e.g. "M5 | 
 // Chart object name. Prefixed so it cannot collide with objects drawn
 // by other indicators, and so OnDeinit knows exactly what to remove.
 string   g_labelName = "CandleTimer_Label";
+string   g_panelName = "CandleTimer_Panel";
 
 // Server time minus local PC time, in seconds. Re-sampled on every
 // tick. See the header comment for why this matters.
@@ -90,6 +98,11 @@ string   g_heartbeatName   = "";
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // The backdrop has to exist before the text label. MT4 draws chart
+   // objects in creation order, so a panel created afterwards would
+   // paint straight over the text it is meant to sit behind.
+   CreateBackgroundPanel();
+
    if(!CreateLabel())
    {
       Print("CandleTimer: could not create the chart label. Error ", GetLastError());
@@ -124,6 +137,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    ObjectDelete(0, g_labelName);
+   ObjectDelete(0, g_panelName);
 
    // Withdraw the heartbeat only on a genuine removal. A recompile or
    // a timeframe switch also calls OnDeinit and re-initialises at
@@ -234,7 +248,67 @@ void UpdateLabel()
    ObjectSetString (0, g_labelName, OBJPROP_TEXT,  text);
    ObjectSetInteger(0, g_labelName, OBJPROP_COLOR, ColourForRemaining(secondsRemaining));
 
+   ResizeBackgroundPanel(StringLen(text));
+
    ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Create the solid backdrop the countdown sits on.                  |
+//|                                                                   |
+//| Without it the chart's grid lines run through the glyphs. Thin    |
+//| coloured text over a dotted grid is hard to read at a glance,     |
+//| which defeats the point of something you check in passing.        |
+//+------------------------------------------------------------------+
+void CreateBackgroundPanel()
+{
+   if(!InpShowPanel)
+      return;
+
+   if(ObjectFind(0, g_panelName) < 0)
+   {
+      if(!ObjectCreate(0, g_panelName, OBJ_RECTANGLE_LABEL, 0, 0, 0))
+         return;
+   }
+
+   ObjectSetInteger(0, g_panelName, OBJPROP_CORNER,      InpCorner);
+   ObjectSetInteger(0, g_panelName, OBJPROP_BGCOLOR,     InpPanelColour);
+   ObjectSetInteger(0, g_panelName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, g_panelName, OBJPROP_COLOR,       InpPanelBorderColour);
+   ObjectSetInteger(0, g_panelName, OBJPROP_WIDTH,       1);
+   ObjectSetInteger(0, g_panelName, OBJPROP_SELECTABLE,  false);
+   ObjectSetInteger(0, g_panelName, OBJPROP_SELECTED,    false);
+   ObjectSetInteger(0, g_panelName, OBJPROP_HIDDEN,      true);
+   ObjectSetInteger(0, g_panelName, OBJPROP_BACK,        false);
+}
+
+//+------------------------------------------------------------------+
+//| Fit the backdrop to the current text.                             |
+//|                                                                   |
+//| Character width is estimated at 0.62 x the font size, about right |
+//| for Consolas. A proportional font will misjudge it, which is what |
+//| InpPanelExtraWidth is for.                                        |
+//+------------------------------------------------------------------+
+void ResizeBackgroundPanel(int textLengthChars)
+{
+   if(!InpShowPanel)
+      return;
+
+   if(ObjectFind(0, g_panelName) < 0)
+      CreateBackgroundPanel();
+
+   int estimatedCharWidth = (int)MathCeil(InpFontSize * 0.62);
+
+   int panelWidth  = textLengthChars * estimatedCharWidth
+                   + InpPanelPadding * 2 + InpPanelExtraWidth;
+   int panelHeight = (int)MathCeil(InpFontSize * 1.6) + InpPanelPadding * 2;
+
+   if(panelWidth < 60) panelWidth = 60;
+
+   ObjectSetInteger(0, g_panelName, OBJPROP_XDISTANCE, MathMax(0, InpXDistance - InpPanelPadding));
+   ObjectSetInteger(0, g_panelName, OBJPROP_YDISTANCE, MathMax(0, InpYDistance - InpPanelPadding));
+   ObjectSetInteger(0, g_panelName, OBJPROP_XSIZE,     panelWidth);
+   ObjectSetInteger(0, g_panelName, OBJPROP_YSIZE,     panelHeight);
 }
 
 //+------------------------------------------------------------------+
@@ -296,7 +370,11 @@ color ColourForRemaining(int secondsRemaining)
 //+------------------------------------------------------------------+
 color ContrastingTextColour()
 {
-   int backgroundColour = (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
+   // What the text actually sits on: the panel when there is one,
+   // otherwise the chart itself.
+   int backgroundColour = InpShowPanel
+                        ? (int)InpPanelColour
+                        : (int)ChartGetInteger(0, CHART_COLOR_BACKGROUND);
 
    int redChannel   =  backgroundColour        & 0xFF;
    int greenChannel = (backgroundColour >> 8)  & 0xFF;
